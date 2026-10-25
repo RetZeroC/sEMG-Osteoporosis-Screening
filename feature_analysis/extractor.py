@@ -1,57 +1,114 @@
+"""Feature extraction from segmented sEMG signals.
+
+Twenty-three descriptors are computed per segment: eleven in the time domain,
+four in the frequency domain and eight wavelet-packet band energies.
+"""
+
 import numpy as np
 import pandas as pd
-from scipy.signal import welch
-from scipy.integrate import simps
-from scipy.stats import kurtosis, skew
 import pywt
+from scipy.signal import welch
+from scipy.stats import kurtosis, skew
 
-def extract_features(emg_samples, sampling_rate=2000, wavelet='db4', level=3):
+try:  # SciPy >= 1.14 renamed simps -> simpson
+    from scipy.integrate import simpson as _integrate
+except ImportError:  # SciPy < 1.14
+    from scipy.integrate import simps as _integrate
+
+SEGMENT_KEYS = ("action_type", "subject_id", "channel_id", "sample_id")
+
+
+def _time_domain_features(signal):
+    """Amplitude- and complexity-based descriptors of the raw segment."""
+    return {
+        "MAV": np.mean(np.abs(signal)),
+        "RMS": np.sqrt(np.mean(signal ** 2)),
+        "IEMG": np.sum(np.abs(signal)),
+        "ZC": np.sum(np.diff(np.sign(signal)) != 0),
+        "WL": np.sum(np.abs(np.diff(signal))),
+        "VAR": np.var(signal),
+        "SSC": np.sum(np.diff(np.sign(np.diff(signal))) != 0),
+        "DAMV": np.mean(np.abs(np.diff(signal))),
+        "PeakToPeak": np.max(signal) - np.min(signal),
+        "Kurtosis": kurtosis(signal),
+        "Skewness": skew(signal),
+    }
+
+
+def _frequency_domain_features(signal, sampling_rate):
+    """Power-spectrum descriptors (median/mean/peak frequency, total power)."""
+    nperseg = min(int(sampling_rate / 8), len(signal))
+    freqs, psd = welch(signal, sampling_rate, nperseg=nperseg)
+
+    total_power = _integrate(psd, freqs)
+    features = {
+        "TotalPower": total_power,
+        "MNF": _integrate(freqs * psd, freqs) / total_power if total_power != 0 else 0,
+    }
+
+    power_sum = np.sum(psd)
+    if power_sum != 0:
+        median_idx = np.where(np.cumsum(psd) >= power_sum * 0.5)[0][0]
+        features["MDF"] = freqs[median_idx]
+        features["PKF"] = freqs[np.argmax(psd)]
+    else:
+        features["MDF"] = features["PKF"] = 0
+
+    return features
+
+
+def _wavelet_features(signal, wavelet, level):
+    """Energy of the ``2 ** level`` wavelet-packet bands at the finest level."""
+    features = {}
+    try:
+        packet = pywt.WaveletPacket(data=signal, wavelet=wavelet, mode="symmetric",
+                                    maxlevel=level)
+        nodes = packet.get_level(level, "natural")
+        for k, node in enumerate(nodes):
+            features[f"WPE_L{level}_E{k}"] = np.sum(node.data ** 2)
+    except ValueError:
+        for k in range(2 ** level):
+            features[f"WPE_L{level}_E{k}"] = 0
+    return features
+
+
+def extract_features(emg_samples, sampling_rate=2000, wavelet="db4", level=3):
+    """Compute the 23-dimensional feature table for a list of segments.
+
+    Parameters
+    ----------
+    emg_samples : list of dict
+        Labelled segments produced by the pipeline; each holds a ``data``
+        DataFrame with an ``EMG_Clean`` column.
+    sampling_rate : int
+        Sampling rate of the signal, in Hz.
+    wavelet : str
+        Mother wavelet used for the wavelet-packet decomposition.
+    level : int
+        Decomposition level; eight bands are obtained at level 3.
+
+    Returns
+    -------
+    pandas.DataFrame
+        One row per segment: the segment metadata (including ``label`` when
+        present) followed by the feature columns. Rows containing non-finite
+        values are dropped.
+    """
     features_list = []
-    
+
     for sample in emg_samples:
-        emg_data = sample['data']['EMG_Clean'].values
-        if len(emg_data) <= 1: continue
+        signal = sample["data"]["EMG_Clean"].values
+        if len(signal) <= 1:
+            continue
 
-        feat = {k: sample[k] for k in ['action_type', 'subject_id', 'channel_id', 'sample_id']}
-        
-        # Time Domain
-        feat['MAV'] = np.mean(np.abs(emg_data))
-        feat['RMS'] = np.sqrt(np.mean(emg_data**2))
-        feat['IEMG'] = np.sum(np.abs(emg_data))
-        feat['ZC'] = np.sum(np.diff(np.sign(emg_data)) != 0)
-        feat['WL'] = np.sum(np.abs(np.diff(emg_data)))
-        feat['VAR'] = np.var(emg_data)
-        feat['SSC'] = np.sum(np.diff(np.sign(np.diff(emg_data))) != 0)
-        feat['DAMV'] = np.mean(np.abs(np.diff(emg_data)))
-        feat['PeakToPeak'] = np.max(emg_data) - np.min(emg_data)
-        feat['Kurtosis'] = kurtosis(emg_data)
-        feat['Skewness'] = skew(emg_data)
+        row = {key: sample[key] for key in SEGMENT_KEYS}
+        if "label" in sample:
+            row["label"] = sample["label"]
 
-        # Frequency Domain
-        nperseg = min(int(sampling_rate / 8), len(emg_data))
-        f, Pxx = welch(emg_data, sampling_rate, nperseg=nperseg)
-        total_power = simps(Pxx, f)
-        
-        feat['TotalPower'] = total_power
-        feat['MNF'] = simps(f * Pxx, f) / total_power if total_power != 0 else 0
-        
-        power_sum = np.sum(Pxx)
-        if power_sum != 0:
-            median_idx = np.where(np.cumsum(Pxx) >= power_sum * 0.5)[0][0]
-            feat['MDF'] = f[median_idx]
-            feat['PKF'] = f[np.argmax(Pxx)]
-        else:
-            feat['MDF'] = feat['PKF'] = 0
+        row.update(_time_domain_features(signal))
+        row.update(_frequency_domain_features(signal, sampling_rate))
+        row.update(_wavelet_features(signal, wavelet, level))
+        features_list.append(row)
 
-        # Time-Frequency Domain (Wavelet)
-        try:
-            wp = pywt.WaveletPacket(data=emg_data, wavelet=wavelet, mode='symmetric', maxlevel=level)
-            for k, node in enumerate(wp.get_level(level, 'natural')):
-                feat[f'WPE_L{level}_E{k}'] = np.sum(node.data**2)
-        except ValueError:
-            for k in range(2**level): feat[f'WPE_L{level}_E{k}'] = 0
-
-        features_list.append(feat)
-
-    df = pd.DataFrame(features_list).replace([np.inf, -np.inf], np.nan).dropna()
-    return df
+    features_df = pd.DataFrame(features_list)
+    return features_df.replace([np.inf, -np.inf], np.nan).dropna()
