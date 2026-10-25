@@ -1,0 +1,57 @@
+# Console output of `python demo/run_demo.py` on the synthetic demo dataset.
+#
+# Reference environment: Python 3.12, numpy 2.3.5, pandas 3.0.1, scipy 1.18.1,
+# PyWavelets 1.8, scikit-learn 1.9.1, matplotlib 3.11.2, seaborn 0.13.2.
+# File counts, segment counts and output file names are stable; the cluster
+# tables depend on the installed library versions. With `--with-dl` the
+# cross-validated classification report is printed instead of the last line.
+
+====================================================================
+sEMG osteoporosis screening - demo pipeline (synthetic data)
+data     : demo/data
+metadata : demo/metadata_clinical_diagnosis.csv
+output   : demo/output
+====================================================================
+
+[1/6] load raw sEMG files
+      bending      6 file(s)
+      sit-stand    6 file(s)
+      total       12 file(s)
+
+[2/6] segment activity bursts (RMS threshold, 0.2 s window)
+      24 segment(s) kept (2.0 per file)
+
+[3/6] attach diagnosis labels from the metadata csv
+      24 labelled segment(s), 0 dropped (unknown subject)
+      labels: level 0: 8, level 1: 8, level 2: 8
+
+[4/6] extract time / frequency / wavelet features
+      24 sample(s) x 23 feature(s)
+      bending: 12 sample(s), sit-stand: 12 sample(s)
+
+[5/6] clustering (IsolationForest + KMeans, k=3)
+      bending  : 6 sample(s) kept -> cluster x level
+         label          1  2
+         cluster_label      
+         0              1  0
+         1              0  3
+         2              2  0
+      sit-stand: 6 sample(s) kept -> cluster x level
+         label          0  1  2
+         cluster_label         
+         0              0  4  0
+         1              0  0  1
+         2              1  0  0
+
+[6/6] figures (svg)
+      demo/output/Bending_feature_correlation.svg
+      demo/output/Bending_mean_heatmap.svg
+      demo/output/dual_distribution_violin.svg
+      demo/output/pca_2d_Bending.svg
+      demo/output/pca_2d_SitStand.svg
+      demo/output/pca_3d_Bending.svg
+      demo/output/pca_3d_SitStand.svg
+
+[+] 1D-CNN stage skipped (needs torch: pip install torch, then --with-dl)
+
+>>> demo pipeline finished

@@ -1,0 +1,4 @@
+subject_id,diagnosis_level,sex,age
+S01,0,F,58
+S02,1,F,63
+S03,2,M,71
